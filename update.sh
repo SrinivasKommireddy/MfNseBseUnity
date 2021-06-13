@@ -1,17 +1,6 @@
 # !/bin/bash
 
-# check postgres availability
-  psql --username=postgres --host=localhost --dbname=unity -c '\q'
-  POSTGRES_STATUS=$?
-  if [[ $POSTGRES_STATUS -ne 0 ]]
-    then
-      echo "Postgres is possibly not running, exiting"
-      exit 1
-    else
-      true
-  fi
-
-# check postgres availability
+# check internet availability
   ping -c 1 www.google.com
   PING_STATUS=$?
   if [[ $PING_STATUS -ne 0 ]]
@@ -34,6 +23,7 @@
   fi
 
 cd /home/kommire/eq
+cat '' > wget.log
 
 for MARKET in idx nse bse mf
 do

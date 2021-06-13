@@ -5,23 +5,44 @@
 # check and refresh masters
   case $MKT in
     idx)
+	  # check from file existance
       if [ ! -f $INS_FILE ]
         then
           echo $INS_FILE does not exist in present working directory
           exit 1
       fi
+      #cat - >> tmp.$PID.$0.$MKT.gen_master.sql <<- EOF
+      #  \timing on
+      #  select * from master where market = 'idx';
+      #  delete   from master where market = 'idx';
+      #  insert   into master (market,code,name,isin,type,category,sector,subsector)
+      #  select 
+      #    distinct
+      #    'idx',code,code,code,code,code,code,code
+      #  from
+      #    hist
+      #  where
+      #    market = 'idx';
+		#EOF
+	  #
+      ## execute script  
+      #echo $(date)
+      #psql -a --username=postgres --host=localhost --dbname=unity --file=tmp.$PID.$0.$MKT.gen_master.sql
+      #echo $(date)
+	  #
+	  #rm tmp.$PID.$0.$MKT.gen_master.sql
       ;;
     mf)
       # get fresh AMC_LIST file
-        $WGET $WGETO_RWAIT -O tmp.$PID.$AMC_LIST 'http://www.amfiindia.com/nav-history-download'
+        $WGET --no-check-certificate -O tmp.$PID.$AMC_LIST 'http://www.amfiindia.com/nav-history-download'
         cat tmp.$PID.$AMC_LIST | grep "option value" \
           | grep -E -v "Ended Schemes|Interval Fund|Hard Copy|Email|NavDownMFName|NavDownType" \
           | sed -Ee 's|</option>|"|g' -e 's|<option value=||g' -e 's|>|,"|g' -e "s|^|\"$MKT\",|g" | \
           $SORT > tmp.$PID.$AMC_LIST.sorted
         mv tmp.$PID.$AMC_LIST.sorted $AMC_LIST
       # refresh instrument list (mutual funds, stocks) list if it is more than 28 days old
-        if [ ! -f $INS_FILE ] || [[ $(date --reference=$INS_FILE +%Y%m%d) -lt  $(date --date="$(date) - 9 day" +%Y%m%d) ]]
-          then
+        #if [ ! -f $INS_FILE ] || [[ $(date --reference=$INS_FILE +%Y%m%d) -lt  $(date --date="$(date) - 9 day" +%Y%m%d) ]]
+        #  then
             $WGET -O tmp.$PID.$INS_FILE.downloaded http://portal.amfiindia.com/DownloadSchemeData_Po.aspx?mf=0
             mv tmp.$PID.$INS_FILE.downloaded $INS_FILE.downloaded
             cat $INS_FILE.downloaded | grep --fixed-strings ',Open Ended,' | tr -d '\015' | \
@@ -34,20 +55,10 @@
                 }' | \
               grep -vE "^Code" | sed -Ee "s|^|$MKT,|g" -e 's|,|","|g' -e 's|^|"|g' -e 's|$|"|g' | $SORT > tmp.$PID.$INS_FILE.sorted
             mv tmp.$PID.$INS_FILE.sorted $INS_FILE
-          fi
-
-        #if [ ! -f $INS_FILE ] || [[ $(date --reference=$INS_FILE +%Y%m%d) -lt  $(date --date="$(date) - 28 day" +%Y%m%d) ]]
-        #  then
-        #    $WGET -O tmp.$PID.$INS_FILE.downloaded http://portal.amfiindia.com/DownloadSchemeData_Po.aspx?mf=0
-        #    mv tmp.$PID.$INS_FILE.downloaded $INS_FILE.downloaded
-        #    cat $INS_FILE.downloaded | grep --fixed-strings ',N,' |  awk -F ',' '{ OFS = "," } { print $2, $6, $2, $4, $5 }' | \
-        #      grep -vE "^Code" | sed -Ee "s|^|$MKT,|g" -e 's|,|","|g' -e 's|^|"|g' -e 's|$|"|g' | \
-        #      $SORT > tmp.$PID.$INS_FILE.sorted
-        #    mv tmp.$PID.$INS_FILE.sorted $INS_FILE
-        #fi
+         # fi
       ;; 
     nse)
-      $WGET $WGETO_RWAIT https://www.nseindia.com/content/equities/EQUITY_L.csv -O tmp.$PID.$INS_FILE
+      $WGET  https://archives.nseindia.com/content/equities/EQUITY_L.csv -O tmp.$PID.$INS_FILE
       iconv --from-code=WINDOWS-1252 --to-code='US-ASCII'//TRANSLIT --verbose --output=tmp.$PID.$INS_FILE.iconv.out tmp.$PID.$INS_FILE
       cat tmp.$PID.$INS_FILE.iconv.out | grep -E ',EQ,|,BE,|,BZ,' | cut -d',' -f1,2,3,7 | gawk -F "," '{OFS=","} {print $1,$2,$4,$3}' | \
         sed -e "s|^|$MKT,|g" -e 's|,|","|g' -e 's|^|"|g' -e 's|$|",""|g' | $SORT -u > tmp.$PID.$INS_FILE.sorted
@@ -59,34 +70,23 @@
       SCRIP_FILE=$(unzip -l tmp.$PID.bse.instrument.scrip.zip | grep SCRIP_ | awk '$1=$1' | cut -d' ' -f4)
       unzip -p tmp.$PID.bse.instrument.scrip.zip "${SCRIP_FILE}" \
         | gawk -F"|" -v OFS=\",\" '{if ($6 == "E") {print "\42" "bse" OFS $1 OFS $4 OFS $18 OFS $7 OFS "\42"}}' \
+        | grep -v ",\"E\",|,\"F\",|,\"G\",|,\"GC\",|,\"IF\",|,\"IT\"," \
         | $SORT -u > tmp.$PID.bse.instrument.scrip.txt
-      mv tmp.$PID.bse.instrument.scrip.txt bse.instrument.scrip.txt
+      cat tmp.$PID.bse.instrument.scrip.txt | grep -Fv ",\"," > bse.instrument.scrip.txt
+      rm tmp.$PID.bse.instrument.scrip.txt
       
+	  # ListOfScrips.csv is manually downloaded from https://www.bseindia.com/corporates/List_Scrips.aspx
       cp ListOfScrips.csv tmp.$PID.ListOfScrips.csv
       iconv --from-code=UTF8 --to-code='US-ASCII'//TRANSLIT --verbose --output=ListOfScrips.csv tmp.$PID.ListOfScrips.csv
 
-      cat ListOfScrips.csv | grep -v "Security Code" \
-	    | sed -e "s|^|bse,|g" -e "s|\&amp;|\&|g" -e "s|-\\$||g" -e "s|,|\",\"|g"  -e 's|\(.*\)|"\1"|g' \
-        | gawk -F, '{gsub(" ","",$6); print $1 FS $2 FS $4 FS $8 FS $6 FS "\42\42"}' \
+      cat ListOfScrips.csv | grep -v "Security Code" | grep ",Active," | grep ",Equity" \
+        | sed -e "s| ,|,|g" -e "s|^|bse,|g" -e "s|\&amp;|\&|g" -e "s|-\\$||g" -e "s|,|\",\"|g"  -e 's|\(.*\)|"\1"|g' \
+        | gawk -F, '{gsub(" ","",$6); print $1 FS $2 FS $5 FS $9 FS $7 FS "\42\42"}' \
+        | grep -v ",\"E\",|,\"F\",|,\"G\",|,\"GC\",|,\"IF\",|,\"IT\"," \
         | $SORT -u > tmp.$PID.bse.instrument.listofscrips.txt
       mv tmp.$PID.bse.instrument.listofscrips.txt bse.instrument.listofscrips.txt
 
-    #cat ListOfScrips.csv | sed -e "s|^|bse,|g" -e "s|\&amp;|\&|g" -e "s|-\\$||g" -e "s|,|\",\"|g"  -e 's|\(.*\)|"\1"|g' | $SORT > tmp.$PID.bse.listofscrips.csv
-    #mv tmp.$PID.bse.listofscrips.csv bse.listofscrips.csv
-    #cat bse.listofscrips.csv | cut -d',' -f1,2,4 | $SORT -u > tmp.${PID}.bse.listofscrips.csv
-    #cat bse.instrument.scrip.txt | $SORT -u > tmp.$PID.bse.instrument.scrip.txt
-    #join -1 2 -2 2 -t, -o 1.1,1.2,2.3 tmp.$PID.bse.instrument.scrip.txt tmp.${PID}.bse.listofscrips.csv > bse.instrument.scrip.txt
-    #rm tmp.$PID.bse.instrument.scrip.txt
-    
-      #$WGET 'https://finance.google.com/finance?output=json&q=%5B+%28exchange+%3D%3D+%22BOM%22%29+%5D&restype=company&noIL=1&num=7000' \
-      #  -O tmp.$PID.$INS_FILE
-      #cat tmp.$PID.$INS_FILE | \
-      #  grep -E '"title" :|"ticker" :|}' | tr -d "\n" | \
-      #  sed -e 's|}|\n|g' -e 's|"title" : ||g' -e 's|"ticker" : ||g' -e 's|,$||g' | \
-      #  sed -r -e 's|^"(.*)","(.*)",$|"\2","\1","\2"|' -e '/^$/d' -e "s/^/\"$MKT\",/g" -e 's|$|,,|g' | $SORT > tmp.$PID.$INS_FILE.sorted
-      #mv tmp.$PID.$INS_FILE.sorted $INS_FILE
-      #mv tmp.$PID.$INS_FILE $INS_FILE.downloaded
-      : #do nothing, master is created from bhavcopy files in sc.process_convert.sh
+      #additional master data recrods are created from bhavcopy files in sc.process_convert.sh
       ;;
     *)
       echo "Error MKT = " $MKT
@@ -124,7 +124,7 @@
           print "cannot handle the situation, exit 0"
           exit 0
           #cut -d',' -f1,2 $INS_FILE | tr -d '"' | sed -re "s|(bse),(.*)|\1,\2,BOM|g" -e "s|(nse),(.*)|\1,\2,NSE|g" \
-          #  -e "s|(.*),(.*),(.*$)|$WGET $WGETO_RWAIT -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
+          #  -e "s|(.*),(.*),(.*$)|$WGET $WGETO_RWAIT --user-agent=${WGET_USER_AGENT} -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
         else
           #https://www.nseindia.com/content/indices/ind_close_all_25012016.csv
           FD=$(date --date="${FMDATE}" +%s)
@@ -132,45 +132,16 @@
           gawk -F ',' -v FD="${FD}" -v TD="${TD}" \
             'BEGIN {for (i=FD;i<=TD;i+=60*60*24) print strftime("%Y-%m-%d",i)}' > tmp.$PID.$MKT.dwn_dates.txt
           cat tmp.$PID.$MKT.dwn_dates.txt | tr '-' ' ' | \
-            gawk -v MKT=${MKT} '{ OFS = "," } 
+            gawk -v MKT=${MKT} -v WG="${WGET}" '{ OFS = "," } 
               {
                 YYYY=$1
                 MM=$2
                 DD=$3
-                print "$WGET $WGETO_RWAIT -O ./in/" MKT "." YYYY MM DD ".csv https://www.nseindia.com/content/indices/ind_close_all_" DD MM YYYY ".csv"
+                print WG "-O ./in/" MKT "." YYYY MM DD ".csv https://www.niftyindices.com/Daily_Snapshot/ind_close_all_" DD MM YYYY ".csv"
               }' >> tmp.$PID.$URL_FILE
       fi
       ;;
 
-#      while [[ $(date -d "$TODATE" +%Y%m%d) -ge $(date -d "$FMDATE_INC" +%Y%m%d) ]]
-#        do
-#          FM_YMD=$(date --date="$FMDATE_INC" +%Y%m%d)
-#          TO_YMD=$(date --date="$TODATE_INC" +%Y%m%d)
-#          FM_DMY=$(date --date="$FMDATE_INC" +%d-%m-%Y)
-#          TO_DMY=$(date --date="$TODATE_INC" +%d-%m-%Y)
-#        
-#          cat $INS_FILE | gawk -F ',' -v MKT=$MKT -v FD=$FM_DMY -v TD=$TO_DMY -v DR=${FM_YMD}_${TO_YMD} -v WG="${WGET}" -v WGO="${WGETO_RWAIT}" \
-#            '{
-#                STK_20=STK_RAW=STK_TRIM=$1;\
-#                gsub(" ","",STK_TRIM); gsub(" ","%20",STK_20); \
-#                print WG WGO  \
-#                "-O ./in/" MKT "." STK_TRIM "." DR ".out " \
-#                "\x27" \
-#                "https://www.nseindia.com/products/dynaContent/equities/indices/historicalindices.jsp?indexType=" \
-#                STK_20 "&fromDate=" FD "&toDate=" TD \
-#                "\x27"
-#              }' \
-#              >> tmp.$PID.$URL_FILE
-#        
-#          FMDATE_INC=$(date --date="$TODATE_INC + 1 days")
-#          TODATE_INC_PLUS_6M=$(date --date="$FMDATE_INC + 6 months - 1 day")
-#            
-#          if [[ $(date --date="$TODATE" +%Y%m%d) -lt $(date --date="$TODATE_INC_PLUS_6M" +%Y%m%d) ]]
-#            then TODATE_INC=$TODATE
-#            else TODATE_INC=$TODATE_INC_PLUS_6M
-#          fi
-#        done
-#      ;;
     mf)
       # for MF's AMFI site requires downloads to be < 365 days, we have set this to 6m
       if [[ $(date --date="$FMDATE + 6 months" +%Y%m%d) -lt $(date --date="$TODATE" +%Y%m%d) ]]
@@ -183,7 +154,8 @@
               TODATE_INC=$(date --date=$(date --date="$FMDATE" +%Y)1231)
           fi
         else
-          FMDATE_INC=$FMDATE
+          #FMDATE_INC=$FMDATE
+		  FMDATE_INC=$(date --date="$(date --date="$FMDATE -  3 days")") # additional 3 days hist for mf
           TODATE_INC=$TODATE
       fi
   
@@ -202,11 +174,11 @@
           #    }' \
           #    >> tmp.$PID.$URL_FILE
           
-          cat $AMC_LIST | gawk -F ',' -v MKT=$MKT -v FD=$FM_DMY -v TD=$TO_DMY -v DR=${FM_YMD}_${TO_YMD} -v WG="${WGET}" -v WGO="${WGETO_RWAIT}" \
+          cat $AMC_LIST | gawk -F ',' -v MKT=$MKT -v FD=$FM_DMY -v TD=$TO_DMY -v DR=${FM_YMD}_${TO_YMD} -v WG="${WGET}" \
             '{
-                MF=$2;           \
+                MF=$2;            \
                 gsub("\"","",MF); \
-                print WG WGO     \
+                print WG          \
                 "-O ./in/" MKT "." MF "." DR ".out " \
                 "\x27" \
                 "http://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx?mf=" MF "&tp=1&frmdt=" FD "&todt=" TD \
@@ -231,20 +203,24 @@
         then
           PERIOD_INTERVAL="11Y"
           cut -d',' -f1,2 $INS_FILE | tr -d '"' | sed -re "s|(bse),(.*)|\1,\2,BOM|g" -e "s|(nse),(.*)|\1,\2,NSE|g" \
-            -e "s|(.*),(.*),(.*$)|$WGET $WGETO_RWAIT -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
+            -e "s|(.*),(.*),(.*$)|$WGET -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
         else
           FD=$(date --date="${FMDATE}" +%s)
           TD=$(date --date="${TODATE}" +%s)
           gawk -F ',' -v FD="${FD}" -v TD="${TD}" \
             'BEGIN {for (i=FD;i<=TD;i+=60*60*24) print strftime("%Y-%m-%d",i)}' \
             | grep -F "$(cut -d, -f3 $IDX_FILE | $SORT -u | tail -$(( $PERIOD_INTERVAL + $BCKTRK_DAYS )))" > tmp.$PID.$MKT.dwn_dates.txt
-          date +%d-%b-%Y -f tmp.$PID.$MKT.dwn_dates.txt | tr [a-z] [A-Z] | tr '-' ' ' | \
-            gawk -v MKT=${MKT} '{ OFS = "," } 
+          date "+%d %b %Y" -f tmp.$PID.$MKT.dwn_dates.txt | \
+            gawk -v MKT=${MKT} -v WG="${WGET}" '{ OFS = "," } 
               {
                 DD=$1
-                MMM=$2
+                Mmm=$2
+                MMM=toupper(Mmm)
                 YYYY=$3
-                print "$WGET $WGETO_RWAIT -O ./in/" MKT "." YYYY MMM DD ".zip https://www.nseindia.com/content/historical/EQUITIES/" YYYY "/" MMM "/cm" DD MMM YYYY "bhav.csv.zip"
+
+                #print WG "-O ./in/" MKT "." YYYY MMM DD ".zip https://www.nseindia.com/api/reports?archives=%5B%7B%22name%22%3A%22CM%20-%20Bhavcopy%28csv%29%22%2C%22type%22%3A%22archives%22%2C%22category%22%3A%22capital-market%22%2C%22section%22%3A%22equities%22%7D%5D\\&date="DD "-" Mmm "-" YYYY
+				#https://archives.nseindia.com/content/historical/EQUITIES/2020/SEP/cm21SEP2020bhav.csv.zip
+				print WG "-O ./in/" MKT "." YYYY MMM DD ".zip https://archives.nseindia.com/content/historical/EQUITIES/" YYYY "/" MMM "/cm" DD MMM YYYY "bhav.csv.zip"
               }' >> tmp.$PID.$URL_FILE
       fi
       ;;
@@ -256,7 +232,7 @@
         then
           PERIOD_INTERVAL="11Y"
           cut -d',' -f1,2 $INS_FILE | tr -d '"' | sed -re "s|(bse),(.*)|\1,\2,BOM|g" -e "s|(nse),(.*)|\1,\2,NSE|g" \
-            -e "s|(.*),(.*),(.*$)|$WGET $WGETO_RWAIT -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
+            -e "s|(.*),(.*),(.*$)|$WGET -O ./in/\1.\2.${FM_YMD}_${TO_YMD}.out \'${URL_GOOFIN}\2\&x=\3\&i=86400\&p=$PERIOD_INTERVAL\&f=d,o,h,l,c,v\'|" >> tmp.$PID.$URL_FILE
         else
           FD=$(date --date="${FMDATE}" +%s)
           TD=$(date --date="${TODATE}" +%s)
@@ -264,7 +240,8 @@
             'BEGIN {for (i=FD;i<=TD;i+=60*60*24) print strftime("%d%m%y",i)}' \
             | grep -F "$(cut -d',' -f3 $IDX_FILE | $SORT -u | tail -$(( $PERIOD_INTERVAL + $BCKTRK_DAYS )) \
             | sed -r 's|([0-9]{2})([0-9]{2})-(.*)-(.*)|\4\3\2|g')" > tmp.$PID.$MKT.dwn_dates.txt
-          gawk -v gMKT=${MKT} '{ OFS = "," } {print "$WGET $WGETO_RWAIT -O ./in/" gMKT "." $1 ".zip http://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_" $1 ".zip"}' tmp.$PID.$MKT.dwn_dates.txt >> tmp.$PID.$URL_FILE
+          # 17 april 2020, EQ_ISINCODE changed to EQ_
+          gawk -v gMKT=${MKT} -v WG="${WGET}" '{ OFS = "," } {print WG "-O ./in/" gMKT "." $1 ".zip https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_" $1 ".zip"}' tmp.$PID.$MKT.dwn_dates.txt >> tmp.$PID.$URL_FILE
       fi
       ;;
     *)

@@ -5,7 +5,7 @@
   rm tmp.$PID.*.sql
 
 # sql file for master
-  if [[ ($MKT = 'mf') || ($MKT = 'bse') || ($MKT = 'nse') ]]
+  if [[ ($MKT = 'mf') || ($MKT = 'bse') || ($MKT = 'nse') || ($MKT = 'idx')]]
     then
       cat - >> tmp.$PID.$0.$MKT.upload.sql <<- EOF
         \timing on
@@ -154,63 +154,80 @@
       # remove sat/sun/holiday data for everyday interest bearing funds
       # update nav for debt funds which jump up wrongly
       cat - >> tmp.$PID.$0.$MKT.upload.sql <<- EOF
-
+        \timing on
         begin;
           copy (select * from hist h where h.nav = 0) to STDOUT;
           delete from hist h where h.nav = 0;
         commit;
-
-        -- begin;
-        -- with delrows as
-        --   (
-        --     select
-        --       h.market,
-        --       h.code,
-        --       h.date
-        --     from
-        --       hist h,
-        --       date d
-        --     where
-        --       0 = 0
-        --       and h.market = 'mf'
-        --       and h.date = d.date
-        --       and d.seq is null
-        --   )
-        -- delete 
-        -- from 
-        --   hist using delrows 
-        -- where 
-        --   hist.market = delrows.market 
-        --   and hist.code = delrows.code 
-        --   and hist.date = delrows.date;
-        -- commit;
-        
+     
+        drop foreign table if exists ff_hist;
+        create foreign table ff_hist (
+          market   text         not null,
+          code     text         not null,
+          date     date         not null,
+          open     numeric(12,4)     null,
+          high     numeric(12,4)     null,
+          low      numeric(12,4)     null,
+          nav      numeric(12,4) not null,
+          volume   bigint           null,
+          adjclose numeric(12,4)     null
+        )
+        server ffdw
+        options (filename '$(pwd)/idx.inc.txt', delimiter ',', NULL 'NULL');
         begin;
-        update only hist
-          set nav = hist.nav/correction.correction
-        from 
-          (
-            select
-              i1.market,
-              i1.code,
-              i1.date,
-              10.0 ^ (length(cast(round((i.nav - i1.nav)/i1.nav) as text))) correction
-            from
-              (select i.market, i.code, i.date, d.seq, i.nav from hist i, date d where i.date = d.date and i.market = 'mf') i,
-              (select i.market, i.code, i.date, d.seq, i.nav from hist i, date d where i.date = d.date and i.market = 'mf') i1
-            where
-              0 = 0
-              and i.market = i1.market
-              and i.code = i1.code
-              and i.seq = i1.seq - 1
-              and (i.nav - i1.nav)/i1.nav > 6
-            order by 1, 2, 3
-          ) correction
-        where
-          hist.market = correction.market
-          and hist.code = correction.code
-          and hist.date > correction.date;
+        with
+          min_date as
+            (
+              select (min(date) - 3) as date from ff_hist
+            ),
+          histi as
+            (
+              select 
+                i.market, i.code, i.date, i.nav
+              from 
+                hist i, min_date md
+              where
+                i.market = 'mf'
+                and i.date >= md.date
+              order by market, code, date
+            ),
+          histid as
+            (
+              select 
+                i.market, i.code, i.date, d.seq, i.nav 
+              from 
+                histi i, date d
+              where
+                i.date = d.date
+              order by market, code, date desc
+            )
+          update only hist
+            set nav = hist.nav/correction.correction
+          from 
+            (
+              select
+                i1.market,
+                i1.code,
+                i1.date,
+                10.0 ^ (length(cast(round((i.nav - i1.nav)/i1.nav) as text))) correction
+              from
+                histid i,
+                histid i1
+              where
+                0 = 0
+                and i.market = i1.market
+                and i.code   = i1.code
+                and i.seq    = i1.seq - 1
+                and (i.nav - i1.nav)/i1.nav > 6
+              order by 1, 2, 3
+            ) correction
+          where
+            hist.market = 'mf'
+            and hist.market = correction.market
+            and hist.code = correction.code
+            and hist.date > correction.date;
         commit;
+        drop foreign table ff_hist;
         
         begin;
           delete
@@ -311,6 +328,15 @@
           copy (select * from master where upper(name) like upper('%Unclaimed%')) to STDOUT;
           delete from master where upper(name) like upper('%Unclaimed%');
         commit;
+		
+		begin;
+          update master
+          set 
+            sector = trim(split_part(category,'-',1)), 
+            subsector = trim(split_part(category,'-',2))
+          where 
+            market = 'mf';
+        commit;
 
         VACUUM analyze verbose hist;
         
@@ -326,46 +352,57 @@
       : # do nothing
       ;;
     nse)
-      cat - >> tmp.$PID.$0.$MKT.upload.sql <<- EOF
-        truncate portfolio;
-        copy 
-          portfolio (channel, market, code, isin, action, qty, price, date)
-        from 
-          PROGRAM 'cat $(pwd)/portfolio.watchlist.txt |  cut -d, -f1,2,3,4,6,7,8,9 | tail -n +2'
-            DELIMITER ',' NULL ''
-        ;
-        copy 
-          portfolio (channel, market, code, isin, action, qty, price, date)
-        from 
-          PROGRAM 'cat $(pwd)/portfolio.icici.txt $(pwd)/portfolio.mf.txt | grep -v "Stock Symbol,Company Name,ISIN Code," | cut -d, -f1,3,4,5,6,13,14 | sed -re "s/,NSE/,nse/g" -e "s/,BSE/,bse/g" -e "s/(.*),(.*),(.*),(.*),(.*),(.*),(.*)/\7,\1,\2,\3,\4,\5,\6/g" -e "s/^/icici,/g"'
-            DELIMITER ',' NULL ''
-        ;
-        copy
-          portfolio (channel, market, code, isin, action, qty, price, date)
-        from 
-          PROGRAM 'cat $(pwd)/portfolio.upstox.*.txt | grep -v "Scrip Code" | grep -v "BONUS" | cut -d, -f1,2,3,10,11,12 | tr -d \" | grep -v ",,,,," | sed -r -e "s|,S,|,Sell,|g" -e "s|,B,|,Buy,|g" -e "s/E CM,/E,/g" -e "s/NSE/nse/g" -e "s/BSE/bse/g" -e "s|([0-9]{2})/([0-9]{2})/([0-9]{4}),([bens]{3}),([A-Z0-9]*),([BSuyel]{3,4}),([0-9]*.[0-9]{4}),([0-9]*.[0-9]{2})|\4,\5,,\6,\7,\8,\3-\2-\1|g" -e "s/^/upstox,/g"'
-            DELIMITER ',' NULL ''
-        ;
-        /*Upstox - where stock is traded in both nse and bse, the code is bse. Where only traded in nse, then code is nse code*/
-        update portfolio set isin = master.isin from master where master.market = 'bse' and portfolio.code = master.code and portfolio.isin is null;
-        update portfolio set isin = master.isin from master where master.market = 'nse' and portfolio.code = master.code and portfolio.isin is null;
-        update portfolio set code = master.code from master where portfolio.market = master.market and portfolio.isin = master.isin;
-        /*update price to 10 where price is 0.0 */
-        update portfolio set price = 10.00 where portfolio.price = 0.00;
-        VACUUM analyze portfolio;
-        
-        drop foreign table if exists ff_nse_fno;
-        create foreign table ff_nse_fno (
-          code      text    not null
-        )
-        server ffdw
-        options (filename '/home/kommire/eq/nse.fno.txt', format 'csv', null '');
-        BEGIN;
-          update master set category = 'FNO' from ff_nse_fno where master.code = ff_nse_fno.code and master.market = 'nse';
-        COMMIT;
-        drop foreign table ff_nse_fno;
-	EOF
+      : # do nothing
       ;;
+      #cat - >> tmp.$PID.$0.$MKT.upload.sql <<- EOF
+      #  \pset pager off
+      #  truncate portfolio;
+      #  copy 
+      #    portfolio (channel, market, code, isin, action, qty, price, date)
+      #  from 
+      #    PROGRAM 'cat $(pwd)/portfolio.watchlist.txt |  cut -d, -f1,2,3,4,6,7,8,9'
+      #      DELIMITER ',' NULL ''
+      #  ;
+      #  copy 
+      #    portfolio (channel, market, code, isin, action, qty, price, date)
+      #  from 
+      #    PROGRAM 'cat $(pwd)/portfolio.icici.txt $(pwd)/portfolio.mf.txt | grep -v "Stock Symbol,Company Name,ISIN Code," | cut -d, -f1,3,4,5,6,13,14 | sed -re "s/,NSE/,nse/g" -e "s/,BSE/,bse/g" -e "s/(.*),(.*),(.*),(.*),(.*),(.*),(.*)/\7,\1,\2,\3,\4,\5,\6/g" -e "s/^/icici,/g"'
+      #      DELIMITER ',' NULL ''
+      #  ;
+      #  copy
+      #    portfolio (channel, market, code, isin, action, qty, price, date)
+      #  from 
+      #    PROGRAM 'cat $(pwd)/portfolio.upstox.py.txt | grep -v "Scrip Code" | grep -v "BONUS" | cut -d, -f1,2,3,10,11,12 | tr -d \" | grep -v ",,,,," | sed -r -e "s|,S,|,Sell,|g" -e "s|,B,|,Buy,|g" -e "s/E CM,/E,/g" -e "s/NSE/nse/g" -e "s/BSE/bse/g" -e "s|([0-9]{2})/([0-9]{2})/([0-9]{4}),([bens]{3}),([A-Z0-9]*),([BSuyel]{3,4}),([0-9]*.[0-9]{4}),([0-9]*.[0-9]{2})|\4,\5,,\6,\7,\8,\3-\2-\1|g" -e "s/^/upstox,/g"'
+      #      DELIMITER ',' NULL ''
+      #  ;
+      #  copy
+      #    portfolio (channel, market, code, isin, action, qty, price, date)
+      #  from 
+      #    PROGRAM 'cat $(pwd)/portfolio.upstox.cy.txt | grep -v "Scrip Code" | grep -v "BONUS" | cut -d, -f1,2,3,10,11,12 | tr -d \" | grep -v ",,,,," | sed -r -e "s|,S,|,Sell,|g" -e "s|,B,|,Buy,|g" -e "s/E CM,/E,/g" -e "s/NSE/nse/g" -e "s/BSE/bse/g" -e "s|([0-9]{2})/([0-9]{2})/([0-9]{4}),([bens]{3}),([A-Z0-9]*),([BSuyel]{3,4}),([0-9]*.[0-9]{4}),([0-9]*.[0-9]{2})|\4,\5,,\6,\7,\8,\3-\2-\1|g" -e "s/^/upstox,/g"'
+      #      DELIMITER ',' NULL ''
+      #  ;
+      #  /*Upstox - where stock is traded in both nse and bse, the code is bse. Where only traded in nse, then code is nse code*/
+      #  update portfolio set isin = master.isin from master where master.market = 'bse' and portfolio.code = master.code and portfolio.isin is null;
+      #  update portfolio set isin = master.isin from master where master.market = 'nse' and portfolio.code = master.code and portfolio.isin is null;
+      #  update portfolio set code = master.code from master where portfolio.market = master.market and portfolio.isin = master.isin;
+      #  /*update price to 10 where price is 0.0 */
+      #  select * from portfolio where portfolio.price = 0.00;
+      #  update portfolio set price = 0.01 where portfolio.price = 0.00;
+	  #
+      #  VACUUM analyze portfolio;
+      #  
+      #  -- drop foreign table if exists ff_nse_fno;
+      #  -- create foreign table ff_nse_fno (
+      #  --   code      text    not null
+      #  -- )
+      #  -- server ffdw
+      #  -- options (filename '/home/kommire/eq/nse.fno.txt', format 'csv', null '');
+      #  -- BEGIN;
+      #  --   update master set category = 'FNO' from ff_nse_fno where master.code = ff_nse_fno.code and master.market = 'nse';
+      #  -- COMMIT;
+      #  -- drop foreign table ff_nse_fno;
+      #EOF
+      #;;
     idx)
       cat - >> tmp.$PID.$0.$MKT.upload.sql <<- EOF
         \timing on
@@ -390,7 +427,7 @@
                     select 
                       distinct date
                       from hist
-                      where market = 'idx'
+                      where code = 'NIFTY50'
                   ) df
                   on d.date = df.date 
             where df.date is not null
@@ -406,6 +443,11 @@
   echo $(date)
   psql -a --username=postgres --host=localhost --dbname=unity --file=tmp.$PID.$0.$MKT.upload.sql
   echo $(date)
+  
+  if [[ (${MKT} = 'nse') ]]
+    then 
+      bash sc.update_portfolio.sh
+  fi
 
 #
   rm tmp.$PID.*
